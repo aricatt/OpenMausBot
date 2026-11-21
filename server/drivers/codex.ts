@@ -7,6 +7,7 @@ import { TEAM_TOOLS_FAILED, teamToolsFailed } from "./team-tools.ts";
 import { enabledMcpMounts, mcpStartupTracker, supportsMcpStartup } from "./codex-mcp-startup.ts";
 import { boxAdmittedEnv, boxProxyEnvNames, customServerEnvBox, type McpApprovalMode, mountMcpServer } from "./codex-mcp-mount.ts";
 import { reportUnsupportedCalls, rolloutMark, type RolloutMark } from "./codex-unsupported-calls.ts";
+import { NAMESPACE_SHIM_UPSTREAM_ENV, runningNamespaceShim } from "../providers/responses-namespace-shim.ts";
 // The `codex` CLI headless over its app-server JSON-RPC (NDJSON on stdio): completion is
 // `turn/completed`, approvals arrive as server→client requests, resumeCursor is the codex thread id.
 import { createHash } from "node:crypto";
@@ -233,11 +234,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       stripWorkspaceCredentialEnv(env);
       delete env.OPENMAUSBOT_CHATGPT_TOKEN;
       delete env.OPENMAUSBOT_CODEX_API_KEY;
+      delete env[NAMESPACE_SHIM_UPSTREAM_ENV];
       for (const name of PLAN_TOKEN_BRIDGE_ENV) delete env[name];
       if (config.endpoint) {
         env.OPENMAUSBOT_CODEX_API_KEY = input.environment.OPENMAUSBOT_CODEX_API_KEY;
         env.CODEX_HOME = input.environment.CODEX_HOME;
       }
+      if (routed && runningNamespaceShim()) env[NAMESPACE_SHIM_UPSTREAM_ENV] = routed.url;
       if (plan) env.CODEX_HOME = join(planDirectory, "codex");
       return env;
     };
