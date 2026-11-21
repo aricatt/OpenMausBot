@@ -512,6 +512,7 @@ import {
   isTurnEventQuarantined, TURN_ENDED_REFUSAL,
 } from "./turn-dispatch-guard.ts";
 import { createGracefulShutdown } from "./graceful-shutdown.ts";
+import { closeCodexNamespaceShim, startCodexNamespaceShim } from "./providers/responses-namespace-shim.ts";
 import { acquireDataDirLeaseForProcess, releaseOnceAtExit } from "./data-dir-lease.ts"; import { markEngineRunClean, startEngineRecords } from "./engine-records.ts";
 import { createWorkspaceAccess, describeEdition, editionForSettings, editionStatus, entitled, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type WorkspaceAccess } from "./enterprise.ts";
 import { environmentDescriptor, loadEnvironmentId, OWNER_LENDING, serverVersion } from "./environment.ts"; import { dataFormatAtStart } from "./data-format.ts"; import { doctorAtStart } from "./doctor/start.ts";
@@ -718,6 +719,7 @@ if (CLOUD_HOME) {
 holdIncludedServices(CLOUD_ENV);
 for (const key of CLOUD_HOME_SECRET_KEYS) delete process.env[key];
 await startBotBoxAtBoot({ dataDir: DATA_DIR, port: PORT }); // The bot box (server/bot-box): on a Cloud home every bot turn runs in it, decided before any engine starts.
+await startCodexNamespaceShim();
 if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
   console.warn("cloud home: its secrets came in this process's environment, which anything running as the same user can read in /proc; start it with cloud-home-start");
 }
@@ -15208,6 +15210,7 @@ const gracefulShutdown = createGracefulShutdown({
       skillReview.stop();
       webhookIngress?.server.close(); webhookIngress?.socketServer?.close();
       tunnelListener?.close(); void tailnetShare.close(); phoneRelay?.stop(); stopCloudHomeConnectedApps();
+      void closeCodexNamespaceShim();
     },
     () => phoneScreen.closeAll(),
     async () => { await managedDesktop.close(); await registry.disposeAll(); },

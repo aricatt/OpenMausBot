@@ -1,3 +1,5 @@
+import { NAMESPACE_SHIM_UPSTREAM_ENV, NAMESPACE_SHIM_UPSTREAM_HEADER, runningNamespaceShim } from "../providers/responses-namespace-shim.ts";
+
 /** A Responses endpoint used by an isolated Codex instance. */
 export interface CodexEndpointConfig {
   url: string;
@@ -27,11 +29,19 @@ export function endpointCodexArgs(config: CodexEndpointConfig): string[] {
 }
 
 function providerCodexArgs(url: string, provider: string, name: string, key: string): string[] {
+  const shim = runningNamespaceShim();
+  // The endpoint stays out of argv when the shim fronts it: codex is told the shim's loopback
+  // URL and reads the real one back from the env var env_http_headers maps onto a header.
+  if (shim) shim.allowUpstream(url);
   return [
     "-c", `model_provider=${JSON.stringify(provider)}`,
     "-c", `model_providers.${provider}.name=${JSON.stringify(name)}`,
-    "-c", `model_providers.${provider}.base_url=${JSON.stringify(url)}`,
+    "-c", `model_providers.${provider}.base_url=${JSON.stringify(shim?.url ?? url)}`,
     "-c", `model_providers.${provider}.env_key=${JSON.stringify(key)}`,
+    ...(shim ? [
+      "-c", `model_providers.${provider}.env_http_headers.${NAMESPACE_SHIM_UPSTREAM_HEADER}=${JSON.stringify(NAMESPACE_SHIM_UPSTREAM_ENV)}`,
+      "-c", `model_providers.${provider}.supports_websockets=false`,
+    ] : []),
     "-c", `model_providers.${provider}.wire_api="responses"`,
     "-c", `model_providers.${provider}.requires_openai_auth=false`,
     "-c", 'cli_auth_credentials_store="ephemeral"',

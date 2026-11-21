@@ -29,6 +29,7 @@ import { CODEX_USAGE_LIMIT_REACHED } from "../../shared/codex-usage-limit.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { unsupportedCallsNotice } from "./codex-unsupported-calls.ts";
+import { NAMESPACE_SHIM_ENV, NAMESPACE_SHIM_UPSTREAM_ENV, NAMESPACE_SHIM_UPSTREAM_HEADER, closeCodexNamespaceShim, runningNamespaceShim, startCodexNamespaceShim } from "../providers/responses-namespace-shim.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
 import { OWN_MCP_HTTP_ENV } from "./own-mcp-http.ts";
@@ -2471,6 +2472,31 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
     expect(pids.size).toBe(selections.length);
     expect(token).toHaveBeenCalledTimes("authMode" in opts ? selections.length : 0);
     expect(catalog).toHaveBeenCalledTimes("authMode" in opts ? 1 : 0);
+  });
+
+  it.each([
+    ["Direct API", { endpoint: true }, "openmaus_endpoint", "gateway-model"],
+    ["Company", { managed: true }, "openmaus_company", "company-codex-model"],
+  ] as const)("points the %s provider at the namespace shim, its endpoint reaching it through env", async (_name, opts, provider, model) => {
+    vi.stubEnv(NAMESPACE_SHIM_ENV, "1");
+    await startCodexNamespaceShim();
+    try {
+      const shim = runningNamespaceShim();
+      expect(shim).not.toBeNull();
+      await create({ ...opts });
+      const dump = join(scratch, "namespace-shim.json");
+      process.env.FAKE_CODEX_DUMP = dump;
+      await instance.adapter.sendTurn({ threadId: `t-shim-${provider}`, text: "Fixture", model });
+      await recorder.until((event) => event.type === "turn.completed");
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(seen.env[NAMESPACE_SHIM_UPSTREAM_ENV]).toBe("http://127.0.0.1:1/v1");
+      expect(seen.argv).toContain(`model_providers.${provider}.base_url=${JSON.stringify(shim!.url)}`);
+      expect(seen.argv).toContain(`model_providers.${provider}.env_http_headers.${NAMESPACE_SHIM_UPSTREAM_HEADER}=${JSON.stringify(NAMESPACE_SHIM_UPSTREAM_ENV)}`);
+      expect(seen.argv).toContain(`model_providers.${provider}.supports_websockets=false`);
+      expect(JSON.stringify(seen.argv)).not.toContain("127.0.0.1:1/v1");
+    } finally {
+      await closeCodexNamespaceShim();
+    }
   });
 
   it.each([
