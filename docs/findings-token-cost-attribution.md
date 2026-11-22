@@ -95,3 +95,30 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 两者 SOUL、记忆、MCP 工具集完全相同。codex 自身系统提示 6.5k、SOUL 0.6k、记忆约 3~4k，剩下约 **90k 量级都在工具定义上**——codex 把 MCP 工具 schema 随每个 turn 全量发送；claudeAgent 的 activity 里能看到 `ToolSearch` 这一前置动作，说明它是按需发现工具，请求里只带一个小的工具索引。
 
 所以 110.5k/步 vs 24.2k/步 的 6.3 倍差，不是模型差，是**每轮请求里工具说明书的厚度差**。
+
+## 按工具面拆账（codex + MiMo，零工具探针）
+
+同一 bot、同一句「1+1 等于几，不要用工具」，只改挂载的工具面：
+
+| 挂载 | 首调用输入 |
+|---|---|
+| `computer: vm` + `browser: true`（现状） | 104,925 |
+| `computer: vm` + `browser: false` | 104,198 |
+| `computer: off` + `browser: false` | 38,369 |
+| `computer: off` + `browser: true` | 38,411 |
+
+拆出来：
+
+- **computer MCP 工具定义 ≈ 66k token（占现状 63%）** ——真正的账在这儿。
+- browser MCP ≈ 0.7k，几乎不占。
+- 剩下的 38k：codex 自身提示 6.5k + SOUL 0.6k + 记忆，再加 OMB 固定注入（技能目录、三个小 MCP：textstat/time/calc 等）。
+
+真实任务上摘掉 browser（`computer: vm`、`browser: false`）跑百度那条：
+
+| | browser on | browser off |
+|---|---|---|
+| 步数 | 11 | 7 |
+| 输入 token | 1,215,915 | 758,313 |
+| 结果 | 正确 | 正确（标题 + 首条热搜一致） |
+
+省 38%，且能力没丢——动作全靠 computer MCP 的 `list_windows` / `get_window_state` / `run_steps`。步数也从 11 降到 7，说明一部分省下来的不是工具面，而是少走的弯路（有离群方差，单次样本）。
