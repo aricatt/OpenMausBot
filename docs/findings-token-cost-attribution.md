@@ -139,3 +139,19 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - 这一组是单次样本，代码任务是单行修复，不能外推成"所有代码工程任务"的结论。
 
 结论：**默认走 claudeAgent 更划算；codex 仍适合它原生的重度 shell/仓库改造场景，但需要接受每步 ~105k 的固定开销。**
+
+## 升级记录：claude CLI 2.1.312 → 2.1.330
+
+- 升级命令：`/opt/homebrew/bin/npm install -g --prefix /opt/homebrew @anthropic-ai/claude-code@2.1.330`
+- 备份：`/tmp/omb/claude-code-2.1.312.bak`（回滚：`npm install -g --prefix /opt/homebrew @anthropic-ai/claude-code@2.1.312`）
+- 注意：PATH 上的 `npm` 是豆包沙箱那份（prefix 在 sandbox_runtime），必须先指定 `--prefix /opt/homebrew`，否则升的不是 OMB 用的那个二进制。
+
+升级后冒烟：
+
+| 检查 | 2.1.312 | 2.1.330 |
+|---|---|---|
+| 零工具首调用输入 | 17,429 | 18,001（+3%） |
+| 动作任务是否仍先 `ToolSearch` | 是 | 是（2 次） |
+| 动作任务结果 | 正确 | 正确（并区分置顶条与排名第 1） |
+
+动作任务 token 这次是 341,047/10 步（上次 193,815/8 步），但本轮多了 hotkey/type_text/press_key 三步、页面上热搜也换了，属单次样本波动，不能当回归信号；要判断得再跑 2~3 次。
