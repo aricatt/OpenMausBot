@@ -25,6 +25,7 @@ export function managedCodexArgs(config: CodexEndpointConfig): string[] {
 export function endpointCodexArgs(config: CodexEndpointConfig): string[] {
   return [...providerCodexArgs(config.url, "openmaus_endpoint", "Direct API", "OPENMAUSBOT_CODEX_API_KEY"),
     "-c", "model_providers.openmaus_endpoint.supports_websockets=false",
+    "-c", 'web_search="disabled"',
     "-c", "features.tool_search=false"];
 }
 

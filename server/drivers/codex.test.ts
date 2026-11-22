@@ -2404,6 +2404,7 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
         expect(seen.env.OPENMAUSBOT_CODEX_API_KEY).toBe("synthetic-endpoint-key");
         expect(JSON.stringify({ argv: seen.argv, calls: seen.calls })).not.toContain("synthetic-endpoint-key");
         expect(seen.argv).toContain("features.tool_search=false");
+        expect(seen.argv).toContain('web_search="disabled"');
         expect(seen.argv).toContain("model_providers.openmaus_endpoint.supports_websockets=false");
       }
 
