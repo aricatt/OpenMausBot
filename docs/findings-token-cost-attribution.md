@@ -44,3 +44,41 @@ Devin 同一个任务每步只有 3.9k，说明工具面本身不必这么贵—
 - 改吞吐/成本：先压工具 schema 的每轮体积（保能力），收益约 20 倍量级。
 - 改步数效率：把 MCP 工具以原生函数名暴露、并在首屏明确「容器桌面 vs 宿主 shell」，减少「拿 shell 试工具」的弯路。
 - 换更小模型不是解药：步数因子会从 3.2 倍往 5~10 倍走。
+
+## 续：同基座模型、两套 harness（MiMo 2.6 对照）
+
+第一轮对照混着两个变量（模型 + harness）。为把 harness 单独拎出来，把基座模型固定成 `mimo-v2.6-pro`：
+
+- `codexMimo`：`driver: codex`，`config.endpoint = {url: https://token-plan-cn.xiaomimimo.com/v1, models: [mimo-v2.6-pro]}`（该网关原生支持 Responses API）。
+- `claude` 实例 + `mimo-v2.6-pro`：`claudeAgent` driver（Anthropic 兼容端点 `https://token-plan-cn.xiaomimimo.com/anthropic`）。
+
+同一个 bot 配置（同 SOUL、`computer: vm`、`browser: true`、`approvalMode: full`），同一句任务，目标换成本网络可达的站点：
+
+> 把当前 Firefox 的地址栏导航到 https://www.baidu.com，确认页面真的加载后，报告窗口标题，以及百度热搜里第一条热搜的标题。做完就停。
+
+| | codex + MiMo 2.6 | claudeAgent + MiMo 2.6 |
+|---|---|---|
+| 步数 | 11 | 8 |
+| 工具调用 | 10 | 7 |
+| 输入 token | 1,215,915 | 193,815 |
+| 每步输入 | ~110.5k | ~24.2k |
+| 输出 token | 3,189 | 9,058 |
+| 结果 | 成功（标题 + 首条热搜正确） | 成功（并额外指出置顶条与排名第 1 的区别） |
+
+同一基座模型、同一任务、同一工具面，**codex 路径每步上下文是 claudeAgent 的 4.5 倍左右，总 token 6.3 倍**。工具集没变，差别在注入方式：codex 把 MCP 工具 schema 全量塞进每个 turn，claudeAgent 走的是更紧凑的工具面。
+
+### 三组数据放在一起（注意任务页不同，仅同一类任务）
+
+| 组合 | 步数 | 输入 token | 每步输入 |
+|---|---|---|---|
+| codex + Qwen3.8-Flash（example.com） | 32 | 3,377,900 | ~105.6k |
+| codex + MiMo 2.6（baidu） | 11 | 1,215,915 | ~110.5k |
+| claudeAgent + MiMo 2.6（baidu） | 8 | 193,815 | ~24.2k |
+| devinAgent + swe-2-high（example.com） | 10 | 38,920 | ~3.9k |
+
+- **模型维度（同 codex harness）**：Qwen 32 步/338 万 → MiMo 11 步/122 万，步数 2.9 倍差、token 2.8 倍差。本地模型确实弱一档，这一项是模型问题。
+- **harness 维度（同 MiMo）**：110.5k/步 → 24.2k/步，6.3 倍差。这一项与模型无关，是注入方式问题。
+
+### 附带发现
+
+codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直接回 `responses_feature_not_supported: tool type 'web_search' is not supported`，导致整个 bot 起不了。已在 `server/drivers/codex-endpoint-config.ts` 的 `endpointCodexArgs` 加 `web_search="disabled"`（与 `codex-background-text.ts` 的既有做法一致）。
