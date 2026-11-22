@@ -82,3 +82,16 @@ Devin 同一个任务每步只有 3.9k，说明工具面本身不必这么贵—
 ### 附带发现
 
 codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直接回 `responses_feature_not_supported: tool type 'web_search' is not supported`，导致整个 bot 起不了。已在 `server/drivers/codex-endpoint-config.ts` 的 `endpointCodexArgs` 加 `web_search="disabled"`（与 `codex-background-text.ts` 的既有做法一致）。
+
+## 差异的来源：零工具探针
+
+同一 bot、同一 `mimo-v2.6-pro`、同一个问句「不要调用任何工具，只用一行回答：1+1 等于几？」：
+
+| | 首调用输入 token |
+|---|---|
+| codex harness | 104,925 |
+| claudeAgent harness | 17,429 |
+
+两者 SOUL、记忆、MCP 工具集完全相同。codex 自身系统提示 6.5k、SOUL 0.6k、记忆约 3~4k，剩下约 **90k 量级都在工具定义上**——codex 把 MCP 工具 schema 随每个 turn 全量发送；claudeAgent 的 activity 里能看到 `ToolSearch` 这一前置动作，说明它是按需发现工具，请求里只带一个小的工具索引。
+
+所以 110.5k/步 vs 24.2k/步 的 6.3 倍差，不是模型差，是**每轮请求里工具说明书的厚度差**。
