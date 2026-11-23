@@ -193,3 +193,31 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - 配置侧排除了 thinking：`~/.claude/settings.json` 无 thinking 开关，driver 只在显式传 effort 时才加 `--effort`，本次派发未传。
 
 结论：一次性引擎启动搁浅，20 次未复现，与模型和 thinking 均无关。附带观察：并行跑时 claude 进程峰值 15 个（每个约 300MB），空闲后回落到 8 个，说明有回收但不彻底，后续多 bot 并发时值得盯。
+
+## 静默卡死的根因：进程被卡在坏代理上（SYN_SENT）
+
+抓现场的方法：一个 45 秒无产出的回合触发自动 dump，记录 `ps`、子进程树、`sample` 调用栈、`lsof`、服务日志。
+
+现场（2026-11-23 14:46，PID 89191，已跑 46 秒、零 token）：
+
+- `sample` 主线程停在 `kevent64`：事件循环空转，不是在算，是在等。
+- `lsof` 关键一行：`TCP localhost:61895->localhost:privoxy (SYN_SENT)`。进程在连本机 8118 端口的代理，三次握手没被应答，永远停在 SYN_SENT。
+- 服务端环境（`launchctl print`）：`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` = `http://127.0.0.1:8118`，`NO_PROXY` 只有 `127.0.0.1,localhost,::1,192.168.0.0/16,10.0.0.0/8,*.local`——**不含 MiMo 网关域名**，于是每一次模型调用都绕道这个代理。
+
+代理实测（同一天）：
+
+- 直连 `https://token-plan-cn.xiaomimimo.com/v1/models`：HTTP 200，0.17 s。
+- 走 8118：12 秒超时，HTTP 000。
+- 走 8118 访问 github.com / statsig.anthropic.com：一律失败或 8 秒超时；直连 github.com 200。
+
+即 8118 上的 MonoProxy 对外部 HTTPS 基本失效，claude 的 HTTP 客户端又不对连接设超时，于是"连代理"这一步无限期挂住，表现为进度条不动、零 token、只能手动中断。
+
+修复：LaunchAgent `~/Library/LaunchAgents/com.ari.openmausbot-server.plist` 的 `NO_PROXY` 追加 `token-plan-cn.xiaomimimo.com,*.xiaomimimo.com`，重启服务。
+
+验证：
+
+- 真实任务运行时 `lsof` 显示 `TCP 192.168.31.151:63485->124.251.34.38:443 (ESTABLISHED)`，直连网关，不再经过 8118。
+- 修复后 16 轮（8 组"新会话 + 同会话第二轮"）：0 次卡死，单轮 5–36 秒；修复前后对比 2/33（6%）→ 0/16。
+- 备份：`/tmp/omb/plist.bak.*`；现场文件 `/tmp/omb/stall-*.txt`。
+
+遗留：仍有个别 claude 进程挂着指向 8118 的 SYN_SENT（非关键链路，如遥测/插件），不阻塞回合但会占进程位。彻底的解法是把 claude 子进程的出网也做成"直连优先"，或者修好/下线 MonoProxy。
