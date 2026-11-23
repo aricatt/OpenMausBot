@@ -182,3 +182,14 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - 成本：Pro ¥0.178 vs Flash ¥0.058（约 1/3，Pro 那轮多花 4 步装 pytest）。
 - 质量：3/3 全部正确，Flash 在难任务上没有掉链子；文档题两者取舍理由都完整。
 - 一处异常：Flash 的文档任务首轮卡死 4 分多钟（无 claude 进程、无 usage 记录），`POST /api/bots/<id>/interrupt` 中断后重跑正常。无法归因到模型，记为待观察。
+
+## 关于那次 285 秒静默停滞的复核
+
+同一道文档题复跑 20 次（Flash、同 bot、同提示词）：
+
+- 串行 10 次：全部正常，耗时 11–50 秒（多数 16 秒），0 次停滞。
+- 并发 10 次（Pro 与 Flash 同时发同一题，5 轮）：全部正常，耗时 25–66 秒，0 次停滞。
+- 停滞那次的用量：input 0 / output 0 / steps 1 / tools 0，耗时 285 秒，状态 interrupted；同时段宿主机上没有任何 claude 进程，说明它一个 token 都没产出，不是"在思考"。
+- 配置侧排除了 thinking：`~/.claude/settings.json` 无 thinking 开关，driver 只在显式传 effort 时才加 `--effort`，本次派发未传。
+
+结论：一次性引擎启动搁浅，20 次未复现，与模型和 thinking 均无关。附带观察：并行跑时 claude 进程峰值 15 个（每个约 300MB），空闲后回落到 8 个，说明有回收但不彻底，后续多 bot 并发时值得盯。
