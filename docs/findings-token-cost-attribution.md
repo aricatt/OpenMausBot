@@ -235,3 +235,16 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - 全程 `SYN_SENT=0`、插件克隆进程 `0`、4/4 回合无卡死。
 
 本机直连可达：MiMo 网关 200 / 0.17 s、github.com 200。8118 对这两者都是超时或失败。
+
+## 看门狗：静默回合就地中止（第三批）
+
+卡死的特征是"一个字节都没有、工具一次都没动"，这是连接层的失败，不是模型在想。`claude` 的 HTTP 客户端没有 connect timeout，一旦端点不可达就会永远等下去，所以回合必须由外面结束。
+
+实现（`server/drivers/claude.ts`）：
+
+- 回合开始（`turn.started`）时给会话挂 `SILENT_TURN_MS = 90_000` 的计时器（`FAKE_CLAUDE_SILENT_TURN_SCALE` 供测试缩放）。
+- 第一次真实输出——`assistant`、`stream_event`、`result`——就撤掉计时器；`init` 不算，因为它只证明进程活着，不证明端点可达。
+- 到点且 `sawStreamDelta === false`、未 Stop、未结算：发一条 `runtime.error`（说明 90 秒无输出且没调用工具），以 `silent_stall` 结算失败，并 `closeSession` 杀掉这个卡住的进程。失败回合走既有的 `turn-failed` 通知链路，bot 立刻空闲，可以被重新派活。
+- **不自动重试**：已产生工具副作用后重放会让动作重复；由主参谋/人决定改派。
+
+测试：`server/testing/fake-claude-cli.ts` 新增 `FAKE_CLAUDE_SILENT_AFTER_INIT`（打完 init 后不再输出）；`claude.test.ts` 新增用例"ends a turn that announced init and then produced nothing, as a silent stall"。`claude.test.ts` 277 passed / 1 skipped，`tsc -p tsconfig.server.json` 干净。

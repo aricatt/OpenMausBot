@@ -79,6 +79,7 @@
 //   FAKE_CLAUDE_LATE_STEER_GATE  path: a late steer runs as the next native turn (2.1.282), replying once it exists
 //   FAKE_CLAUDE_LATE_STEER_INIT_GATE  path: that late turn's `init` also waits for it
 //   FAKE_CLAUDE_LATE_STEER_SILENT  1: the late turn prints `init` and nothing else
+//   FAKE_CLAUDE_SILENT_AFTER_INIT  1: every turn prints `init` and then nothing (a hung connection, no token, no tool)
 //   FAKE_CLAUDE_SLOW_FINISH_GATE  path: `slow` replies once it exists; a body of "fail" ends as is_error
 //   FAKE_CLAUDE_SLOW_TAIL_TOOL  1: `slow` makes one more tool call right before its reply
 //   FAKE_CLAUDE_QUEUED_TURN_COUNT  unset | zero (what 2.1.282 reports for stdin words) | count
@@ -995,6 +996,11 @@ const playTurn = (prompt: JsonValue, late = false) => {
   if (rateLimit) out({ type: "rate_limit_event", rate_limit_info: rateLimit, session_id: sessionId });
 
   if (lateContinuation && process.env.FAKE_CLAUDE_LATE_STEER_SILENT) {
+    setInterval(() => {}, 1_000);
+    return;
+  }
+  // A process that took the prompt, announced init, and then never reaches the endpoint: no token, no tool.
+  if (process.env.FAKE_CLAUDE_SILENT_AFTER_INIT) {
     setInterval(() => {}, 1_000);
     return;
   }

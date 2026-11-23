@@ -515,6 +515,19 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(existsSync(dump)).toBe(false);
   });
 
+  it("ends a turn that announced init and then produced nothing, as a silent stall", async () => {
+    process.env.FAKE_CLAUDE_SILENT_TURN_SCALE = "0.002"; // 90 s → 180 ms
+    await create(undefined, { FAKE_CLAUDE_SILENT_AFTER_INIT: "1" });
+    const threadId = "t-silent-stall";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "Summarize the notes" });
+    const note = await recorder.until((e) => e.type === "runtime.error");
+    expect(note).toMatchObject({ turnId, message: expect.stringContaining("nothing for 90 seconds") });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: false, stopReason: "silent_stall" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(1);
+  });
+
   it("gates every eligible MCP mount while preserving guest and instance restrictions", async () => {
     const dump = join(scratch, "scope-mcp.json"); process.env.FAKE_CLAUDE_DUMP = dump;
     await create("echo", { FAKE_CLAUDE_VERSION: "2.1.284" }, { tools: ["Read"], disallowedTools: ["Write"] });
@@ -557,6 +570,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_TEXT_HANG;
     delete process.env.FAKE_CLAUDE_STEER_GRACE_SCALE;
     delete process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE;
+    delete process.env.FAKE_CLAUDE_SILENT_TURN_SCALE;
     vi.unstubAllEnvs();
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
