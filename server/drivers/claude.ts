@@ -400,9 +400,16 @@ export const STEERED_CONTINUATION_GRACE_MS = 2_000;
  * milliseconds) before the turn closes on the held result. */
 export const STEERED_CONTINUATION_SILENCE_MS = 30_000;
 
+/** A turn that has said nothing at all — no frame, no token, no tool call — this long is not thinking:
+ * the CLI's HTTP client has no connect timeout, so an unreachable endpoint leaves it waiting forever.
+ * Ending such a turn is the only way it ever ends; a turn that already streamed or ran a tool never hits this. */
+export const SILENT_TURN_MS = 90_000;
+export const SILENT_TURN_NOTE = "Claude produced nothing for 90 seconds and never called a tool, so the turn was stopped. Retry the task, or hand it on.";
+
 const fakeTimerScale = (name: string) => Number(process.env[name] ?? "1") || 1;
 const steerGraceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_GRACE_SCALE");
 const steerSilenceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_SILENCE_SCALE");
+const silentTurnScale = () => fakeTimerScale("FAKE_CLAUDE_SILENT_TURN_SCALE");
 
 /** In a folder of its own, which the bot box puts back read-only: a bind of the file alone would keep showing the box the
  * copy it was started with after a turn renames a new token over it. */
@@ -809,6 +816,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         continuationSilence: ReturnType<typeof setTimeout> | null;
       } | null;
       idleTimer: ReturnType<typeof setTimeout> | null;
+      /** Ends a turn that has produced nothing yet (no frame, no delta, no tool) after SILENT_TURN_MS. */
+      silentTimer?: ReturnType<typeof setTimeout> | null;
+      /** Set by the launch that owns this process: closes the current turn as a silent stall. */
+      failSilentTurn?: () => void;
       closing: boolean;
       unconfirmedStopWarned?: boolean;
       /** Started before any message was sent (the adapter's `prestart`) and not yet taken by a turn: it says nothing in the chat.
@@ -884,6 +895,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const held = (warmHolds.get(threadId) ?? 0) - Date.now();
       s.idleTimer = armIdleClose(`${instanceId}\0${threadId}`, s.spare ? s.spareMs ?? PRESTART_IDLE_MS : Math.min(2_147_483_647, Math.max(engineIdleMs(threadId, sessionIdle), held)), { close: () => closeSession(threadId, s.spare ? "never used" : "idle"), threadId, policy: sessionIdle, spare: () => s.spare === true, // per-chat
         idle: () => sessions.get(threadId) === s && !s.closing && !s.turn && !active.has(threadId), held: () => !s.spare && (warmHolds.get(threadId) ?? 0) > Date.now() });
+    };
+    /** A turn with no output at all is a hung connection, not thought: arm its stop when it starts and
+     * disarm it on the first frame, delta or tool. */
+    const armSilentTurn = (threadId: string) => {
+      const s = sessions.get(threadId);
+      if (!s || !s.turn) return;
+      if (s.silentTimer) clearTimeout(s.silentTimer);
+      s.silentTimer = setTimeout(() => {
+        s.silentTimer = null;
+        s.failSilentTurn?.();
+      }, SILENT_TURN_MS * silentTurnScale());
+      s.silentTimer.unref?.();
     };
     // Keep-warm pings and warm summaries fork a thread's session with its live launch contract (claude-warm-summary.ts).
     const forks = claudeForks({ cli: config.cli, contracts: warmContracts, holds: warmHolds, armIdle, supports: (flag) => cliVersion === null || claudeCliSupports(cliVersion, flag),
@@ -1173,6 +1196,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           stopSession(live);
         }, turnId, broker: live.broker });
         emit({ ...base(threadId, turnId), type: "turn.started" });
+        armSilentTurn(threadId);
         const volatile = turn.systemVolatile ?? "", roster = turn.systemRoster ?? "", same = !turn.mentionTurn && (volatile === live.volatile || (live.volatile === null && !volatile.trim()));
         const message = same && roster === live.roster.now
           ? promptMsg // a changed roster (a bot added, renamed or removed) rides this message, with no relaunch
@@ -1324,6 +1348,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         replaysUserMessages,
         turn: spare ? null : { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: new Set(), deferred: null, continuationGrace: null, continuationSilence: null },
         idleTimer: null,
+        silentTimer: null,
         closing: false, spare, take: (taker) => { turnId = taker; }, ...(spare ? { tools: spareTools.forProcess((frame) => writeControlFrame(child.stdin, frame)), spareMs, spareAt: Date.now(), ...(sessionId ? { resumed: sessionId } : {}) } : {}),
         stderr: "",
         costTotal: undefined,
@@ -1339,6 +1364,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const t = session.turn;
         if (!t || t.settled) return;
         t.settled = true;
+        if (session.silentTimer) {
+          clearTimeout(session.silentTimer);
+          session.silentTimer = null;
+        }
         if (t.continuationGrace) {
           clearTimeout(t.continuationGrace);
           t.continuationGrace = null;
@@ -1364,6 +1393,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (session.child.exitCode === null && !session.closing) armIdle(threadId);
       };
       const settleResult = (result: NativeTurnResult) => settle(result.ok, result.stopReason, result.cost, result.usage);
+      session.failSilentTurn = () => {
+        const t = session.turn;
+        if (!t || t.settled || t.stopRequested || t.sawStreamDelta) return;
+        emit({ ...base(threadId, t.turnId), type: "runtime.error", message: SILENT_TURN_NOTE });
+        settle(false, "silent_stall");
+        closeSession(threadId, "silent turn: no output");
+      };
       const currentTurnId = () => session.turn?.turnId ?? turnId;
       const unconfirmedStopWarning = () => { if (session.unconfirmedStopWarned) return; session.unconfirmedStopWarned = true; emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: "Claude could not be confirmed stopped; its helper processes may still be running." }); };
       session.releaseInterrupted = () => { if (session.turn?.stopRequested) { unconfirmedStopWarning(); settle(false, "interrupted"); } };
@@ -1395,6 +1431,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return;
         }
         if (session.context.frame(o) || session.tools?.frame(o) || session.spare) return;
+        // Any real output — a frame, a delta, a tool — proves the connection answered.
+        if (session.silentTimer && (o.type === "assistant" || o.type === "stream_event" || o.type === "result")) {
+          clearTimeout(session.silentTimer);
+          session.silentTimer = null;
+        }
         authRecovery.frame(threadId, o, session.costTotal);
         // A replayed stdin message carries its images again: keep their bytes out of the log.
         appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: o?.type === "user" && o.isReplay === true && o.message ? diagnosticClaudeUserMessage(o) : o });
@@ -1783,6 +1824,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
       active.set(threadId, { stop, turnId, broker });
       emit({ ...base(threadId, turnId), type: "turn.started" });
+      armSilentTurn(threadId);
 
       // Prompt over stdin, never argv (ARG_MAX); stdin stays open for steers and the next turn.
       if (!(await writeUser(session, threadId, halves.stable !== null && halves.volatile.trim() ? claudeUserMessage(withVolatileNote(turn.text, halves.volatile, true), turn.images) : promptMsg))) {
