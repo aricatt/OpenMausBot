@@ -221,3 +221,17 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - 备份：`/tmp/omb/plist.bak.*`；现场文件 `/tmp/omb/stall-*.txt`。
 
 遗留：仍有个别 claude 进程挂着指向 8118 的 SYN_SENT（非关键链路，如遥测/插件），不阻塞回合但会占进程位。彻底的解法是把 claude 子进程的出网也做成"直连优先"，或者修好/下线 MonoProxy。
+
+## 出网改为直连（第二批处理）
+
+第一步只给 MiMo 域名加了 `NO_PROXY`，模型调用直连了，但每轮 CLI 启动仍会留一个指向 `127.0.0.1:8118` 的半开连接（遥测/插件同步等非关键链路），因为代理本身对外部 HTTPS 是坏的。
+
+于是把 `~/Library/LaunchAgents/com.ari.openmausbot-server.plist` 的 `NO_PROXY` 直接设为 `*`（`HTTP_PROXY` 等仍保留，但已不再被使用），重启服务。备份在 `/tmp/omb/plist.bak2.*`。
+
+验证（两轮真实工具任务，各跑"首轮 + 同会话第二轮"）：
+
+- 文档题：18 s / 14 s，答案正确（14 天 + `2026-11-18-客服培训.md` 不可对客）。
+- 对账题：7 s / 11 s，答案正确（3.48 kg）。
+- 全程 `SYN_SENT=0`、插件克隆进程 `0`、4/4 回合无卡死。
+
+本机直连可达：MiMo 网关 200 / 0.17 s、github.com 200。8118 对这两者都是超时或失败。
