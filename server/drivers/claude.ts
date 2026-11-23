@@ -1485,7 +1485,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
         if (session.context.frame(o) || session.tools?.frame(o) || session.spare) return;
         // Any real output — a frame, a delta, a tool — proves the connection answered.
-        if (session.silentTimer && (o.type === "assistant" || o.type === "stream_event" || o.type === "result")) {
+        // Keepalive pings are not output: the CLI sends one every 10s even while it emits nothing,
+        // so counting them would leave a hung turn armed forever.
+        const keepalivePing = o.type === "stream_event" && o.event?.type === "ping";
+        if (session.silentTimer && !keepalivePing && (o.type === "assistant" || o.type === "stream_event" || o.type === "result")) {
           clearTimeout(session.silentTimer);
           session.silentTimer = null;
         }

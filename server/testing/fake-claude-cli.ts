@@ -1001,7 +1001,12 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
   // A process that took the prompt, announced init, and then never reaches the endpoint: no token, no tool.
   if (process.env.FAKE_CLAUDE_SILENT_AFTER_INIT) {
-    setInterval(() => {}, 1_000);
+    if (process.env.FAKE_CLAUDE_SILENT_WITH_PINGS) {
+      // The real CLI keeps a 10 s heartbeat going even while it produces nothing; speed it up here.
+      const ping = () => out({ type: "stream_event", event: { type: "ping" }, session_id: sessionId, parent_tool_use_id: null });
+      ping();
+      setInterval(ping, 20);
+    } else setInterval(() => {}, 1_000);
     return;
   }
   replay(prompt);
