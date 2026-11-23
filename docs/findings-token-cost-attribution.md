@@ -248,3 +248,15 @@ codex 的 endpoint 模式默认会带 `web_search` 工具声明，MiMo 网关直
 - **不自动重试**：已产生工具副作用后重放会让动作重复；由主参谋/人决定改派。
 
 测试：`server/testing/fake-claude-cli.ts` 新增 `FAKE_CLAUDE_SILENT_AFTER_INIT`（打完 init 后不再输出）；`claude.test.ts` 新增用例"ends a turn that announced init and then produced nothing, as a silent stall"。`claude.test.ts` 277 passed / 1 skipped，`tsc -p tsconfig.server.json` 干净。
+
+### 端到端验证（人为制造挂死）
+
+把 `~/.claude/settings.json` 的 `ANTHROPIC_BASE_URL` 临时指向黑洞 `http://10.255.255.1:9`（备份 `/tmp/omb/claude-settings.bak`），向「难测-Flash」派一个真实文档任务：
+
+- 07:25:32 起回合，07:27:02 结算，恰好 90.0 s；`usage` 记 `steps 1 / input 0 / output 0`，`outcome.status = interrupted`，原因就是上面那条 90 秒提示。
+- 同一线程随后自动重试一次，同样 90 s 后再次中止（第二次）；随后 OMB 既有的 incident 报告送到主参谋 MausBot，MausBot 把任务改派给「对照-CodexMiMo」。
+- 全程没有产生任何工具副作用（0 步工具），所以重试不会重复动作。
+
+恢复端点后回归 4 个回合：文档题 17.7 s / 4 s、对账题 33.1 s / 7.6 s，答案全部正确（14 天 + `2026-11-18-客服培训.md`；3.48 kg），0 条 silent_stall 提示；`claude` 进程 3 个（空闲会话）、`SYN_SENT=0`、插件克隆进程 0。
+
+结论：卡死不再无声无息地占着 bot——90 s 内必定结算成失败，失败走 `turn-failed` 链路并触发既有的"重试一次 → 报主参谋改派"。
