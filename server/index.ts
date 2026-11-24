@@ -234,6 +234,7 @@ import { createGoalCards, type LiveGoalRun } from "./host/goal-cards.ts";
 import { createOneOnOneGoals } from "./host/one-on-one-goals.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+import { hasHeldNativeLines } from "./drivers/native.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { forgetNotificationReader, liveAppRows, openCardRows, readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing, logNotification, lastRowAt, threadsWithCardsSince } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
@@ -15184,7 +15185,16 @@ server.listen(PORT, listenHost(server), async () => {
   drainQueuedSends();
   drainQueuedChannelSends();
   void cloudComputerPower.armRunning();
-  startUpkeep({ bots: () => store.bots, retentionDays: () => threadEventLogRetentionDays(cfg), busy: threadBusy, openDirectHandoff: (threadId) => coordinator.activeDirect(threadId) });
+  startUpkeep({
+    bots: () => store.bots,
+    retentionDays: () => threadEventLogRetentionDays(cfg),
+    busy: threadBusy,
+    openDirectHandoff: (threadId) => coordinator.activeDirect(threadId),
+    threadBusy: (threadId) => {
+      const bot = store.botByThread(threadId);
+      return Boolean(bot && threadBusy(bot.id, threadId)) || directTurnDispatchClaims.has(threadId) || groupSpeakers.has(threadId) || hasHeldNativeLines(threadId);
+    },
+  });
   if (enginesRead) {
     await enginesRead;
     if (companyShutdown) return;

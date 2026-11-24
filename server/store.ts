@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path"; import { isDeepStrictEqual } from "node:util";
 
 import { writeFileAtomic } from "./atomic.ts"; import { BOTS_FILE, JsonRegistry, persistedPin, type RegistryDurability, type RegistryStore } from "./registry-store.ts"; import { discardNativeLog } from "./drivers/native.ts";
@@ -877,6 +877,16 @@ export class Store {
         unlinkSync(file);
       } catch {}
     }
+    // Retention fragments and compressed generations of the native log go with the thread.
+    try {
+      const fragment = new RegExp(`^${threadId}(?:\\.\\d+)?\\.ndjson\\.gz$|^${threadId}\\.\\d+\\.ndjson$`);
+      for (const name of readdirSync(NATIVE_DIR)) {
+        if (!fragment.test(name)) continue;
+        try {
+          unlinkSync(join(NATIVE_DIR, name));
+        } catch {}
+      }
+    } catch {}
     this.emit({ type: "thread.deleted", threadId });
   }
 

@@ -1,6 +1,7 @@
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { readThreadEvents } from "./thread-events.ts";
@@ -241,6 +242,53 @@ describe("readThreadEvents", () => {
     expect(page.total.runtime).toBe(2);
     expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["large", "latest"]);
     expect((page.entries[0]!.data as { text: string }).text.startsWith("🐭🐭")).toBe(true);
+  });
+
+  it("merges the live log, compressed generations and rotated fragments in time order", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const frame = (at: string, tag: string) => ({ at, dir: "in", source: "claude", msg: { tag } });
+    writeFileSync(join(nativeDir, "t1.ndjson.gz"), gzipSync(line(frame("2026-08-10T00:00:00.000Z", "old-gz"))));
+    writeFileSync(join(nativeDir, "t1.1.ndjson"), line(frame("2026-08-12T00:00:00.000Z", "frag-1")));
+    writeFileSync(join(nativeDir, "t1.2.ndjson.gz"), gzipSync(line(frame("2026-08-14T00:00:00.000Z", "frag-2-gz"))));
+    writeFileSync(join(nativeDir, "t1.ndjson"), line(frame("2026-08-16T00:00:00.000Z", "live")) + line(frame("2026-08-16T00:01:00.000Z", "live-2")));
+    writeFileSync(join(nativeDir, "t10.ndjson"), line(frame("2026-08-16T00:02:00.000Z", "other-thread")));
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.total.native).toBe(5);
+    expect(page.entries.map((entry) => [entry.kind, (entry.data as { msg: { tag: string } }).msg.tag])).toEqual([
+      ["native", "old-gz"],
+      ["native", "frag-1"],
+      ["native", "frag-2-gz"],
+      ["native", "live"],
+      ["native", "live-2"],
+    ]);
+  });
+
+  it("keeps the limit across merged native fragments, taking the newest records", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const frame = (i: number) => ({ at: `2026-08-17T10:00:${String(i).padStart(2, "0")}.000Z`, dir: "in", source: "claude", msg: { i } });
+    writeFileSync(join(nativeDir, "t1.1.ndjson"), [frame(0), frame(1), frame(2)].map(line).join(""));
+    writeFileSync(join(nativeDir, "t1.ndjson"), [frame(3), frame(4), frame(5)].map(line).join(""));
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 4 });
+    expect(page.total.native).toBe(6);
+    expect(page.entries.map((entry) => (entry.data as { msg: { i: number } }).msg.i)).toEqual([2, 3, 4, 5]);
+  });
+
+  it("replays a thread whose whole native log is compressed", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const frames = [
+      { at: "2026-08-10T00:00:00.000Z", dir: "out", source: "claude", msg: { tag: "one" } },
+      { at: "2026-08-10T00:00:01.000Z", dir: "in", source: "claude", msg: { tag: "two" } },
+    ];
+    writeFileSync(join(nativeDir, "t1.ndjson.gz"), gzipSync(frames.map(line).join("")));
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.total.native).toBe(2);
+    expect(page.entries.map((entry) => [entry.kind, entry.at])).toEqual([
+      ["native", "2026-08-10T00:00:00.000Z"],
+      ["native", "2026-08-10T00:00:01.000Z"],
+    ]);
   });
 
   it("refuses a thread id that could escape the log directory", () => {
