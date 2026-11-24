@@ -5,13 +5,19 @@
 // any venv outright, without checking that a package manager made them, so a venv holding the person's own script or
 // a hand-written node_modules would go, and on a desktop a task workspace can be a project the person also works in.
 // The cache cap's sweeper (cache-sweep/) starts here too; it deletes nothing while a turn or an engine process is alive.
+// The native frame logs' retention (roll oversized live logs, compress idle ones) runs at startup too and then daily
+// at 03:40 local — clear of the 03:30 memory backup.
 import { cleanupStaleAttachmentPartials } from "../attachments.ts";
+import { NATIVE_DIR } from "../config.ts";
+import { sweepNativeLogs, type NativeLogSweepResult } from "../native-retention.ts";
 import type { BotRecord } from "../store.ts";
 import { sweepTaskWorkspaceBuildFolders } from "../task-workspace-retention.ts";
 import { sweepThreadEventLogs } from "../thread-retention.ts";
 
 export const THREAD_LOG_RETENTION_SWEEP_MS = 24 * 60 * 60 * 1000;
 export const TASK_WORKSPACE_RETENTION_ENV = "OMB_TASK_WORKSPACE_RETENTION";
+export const NATIVE_LOG_SWEEP_HOUR = 3;
+export const NATIVE_LOG_SWEEP_MINUTE = 40;
 
 /** The task workspaces' sweep runs only when OMB_TASK_WORKSPACE_RETENTION is 1, on, true or yes. */
 export function taskWorkspaceRetentionOn(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -30,9 +36,19 @@ export interface StartUpkeepDeps {
   sweepWorkspaces?: (candidates: Parameters<typeof sweepTaskWorkspaceBuildFolders>[0]) => string[] | Promise<string[]>;
   /** Whether the task workspaces' sweep runs; taskWorkspaceRetentionOn by default (off). */
   workspaceRetention?: () => boolean;
+  threadBusy?: (threadId: string) => boolean;
+  sweepNative?: (isBusy: (threadId: string) => boolean) => NativeLogSweepResult;
 }
 
 const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** The next local 03:40 strictly after `from`. */
+export function nextNativeLogSweepAt(from: number): number {
+  const at = new Date(from);
+  at.setHours(NATIVE_LOG_SWEEP_HOUR, NATIVE_LOG_SWEEP_MINUTE, 0, 0);
+  if (at.getTime() <= from) at.setDate(at.getDate() + 1);
+  return at.getTime();
+}
 
 export function startUpkeep(deps: StartUpkeepDeps): void {
   const sweepLogsNow = () => {
@@ -75,6 +91,13 @@ export function startUpkeep(deps: StartUpkeepDeps): void {
       sweepingWorkspaces = false;
     }
   };
+  const sweepNativeNow = () => {
+    const sweep = deps.sweepNative ?? ((isBusy: (threadId: string) => boolean) => sweepNativeLogs(NATIVE_DIR, { isBusy }));
+    const result = sweep(deps.threadBusy ?? (() => false));
+    if (result.rotated > 0 || result.compressed > 0)
+      console.log(`[retention] native frame logs: ${result.rotated} rotated, ${result.compressed} compressed`);
+    if (result.failed > 0) console.warn(`[retention] native frame log sweep: ${result.failed} file(s) failed`);
+  };
   const sweepAll = () => {
     try {
       sweepLogsNow();
@@ -91,9 +114,25 @@ export function startUpkeep(deps: StartUpkeepDeps): void {
       console.warn(`attachments: startup partial cleanup failed: ${reason(error)}`);
     }
     sweepAll();
+    try {
+      sweepNativeNow();
+    } catch (error) {
+      console.warn(`native frame log retention sweep failed: ${reason(error)}`);
+    }
   });
   setInterval(sweepAll, THREAD_LOG_RETENTION_SWEEP_MS).unref();
   // Busy: a turn runs, or an engine process lives on between turns (a kept-warm engine, the MCP servers it started), which
   // may run a program out of a cache entry.
   deps.caches?.start(() => (deps.enginesLive?.() ?? false) || deps.bots().some((bot) => (bot.tasks ?? []).some((task) => deps.busy(bot.id, task.threadId))));
+  const armNativeLogSweep = (): void => {
+    setTimeout(() => {
+      try {
+        sweepNativeNow();
+      } catch (error) {
+        console.warn(`native frame log retention sweep failed: ${reason(error)}`);
+      }
+      armNativeLogSweep();
+    }, Math.max(0, nextNativeLogSweepAt(Date.now()) - Date.now())).unref();
+  };
+  armNativeLogSweep();
 }

@@ -107,6 +107,11 @@ export function discardNativeLog(threadId: string): void {
   take(threadId);
 }
 
+/** Lines still buffered for a thread will write <threadId>.ndjson on the next flush: the retention sweep leaves it alone. */
+export function hasHeldNativeLines(threadId: string): boolean {
+  return held.has(threadId);
+}
+
 function take(threadId: string): string[] | undefined {
   const lines = held.get(threadId);
   if (!lines) return undefined;

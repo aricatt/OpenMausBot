@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskRecord } from "../store.ts";
-import { startUpkeep, taskWorkspaceRetentionOn, THREAD_LOG_RETENTION_SWEEP_MS } from "./start-upkeep.ts";
+import { nextNativeLogSweepAt, startUpkeep, taskWorkspaceRetentionOn, THREAD_LOG_RETENTION_SWEEP_MS } from "./start-upkeep.ts";
 
 const task = (threadId: string, extra: Partial<TaskRecord> = {}) => ({ threadId, closedBy: { at: 1 }, archivedAt: null, unread: false, ...extra }) as TaskRecord;
 
@@ -120,5 +120,43 @@ describe("start-up upkeep", () => {
     working = "";
     warm = true;
     expect(busy!()).toBe(true);
+  });
+
+  it("sweeps the native frame logs once the server answers, then each day at 03:40", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-24T10:00:00"));
+    const calls: boolean[] = [];
+    startUpkeep({
+      bots: () => [{ id: "bot", tasks: [task("quiet")] }],
+      retentionDays: () => null,
+      busy: () => false,
+      openDirectHandoff: () => false,
+      sweepLogs: () => 0,
+      threadBusy: (threadId) => threadId === "busy",
+      sweepNative: (isBusy) => {
+        calls.push(isBusy("busy"));
+        return { rotated: 0, compressed: 0, skippedBusy: 0, failed: 0 };
+      },
+    });
+    expect(calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([true]);
+    await vi.advanceTimersByTimeAsync(17 * 60 * 60_000); // 03:00 the next day: not yet
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60 * 60_000); // past 03:40
+    expect(calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    expect(calls).toHaveLength(3);
+  });
+});
+
+describe("nextNativeLogSweepAt", () => {
+  it("returns the next local 03:40 strictly after the given time", () => {
+    const before = nextNativeLogSweepAt(new Date("2026-11-24T02:00:00").getTime());
+    expect(new Date(before).getHours()).toBe(3);
+    expect(new Date(before).getMinutes()).toBe(40);
+    expect(new Date(before).getDate()).toBe(24);
+    const sameInstant = nextNativeLogSweepAt(new Date("2026-11-24T03:40:00").getTime());
+    expect(new Date(sameInstant).getDate()).toBe(25);
   });
 });

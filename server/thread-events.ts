@@ -1,5 +1,6 @@
-import { closeSync, fstatSync, openSync, readSync, type Stats } from "node:fs";
+import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { InspectorEntry, InspectorPage, NativeRecord } from "../shared/inspector.ts";
 
@@ -243,6 +244,79 @@ function isNativeRecord(value: unknown): value is NativeRecord {
   );
 }
 
+/** A thread's native log: the live <tid>.ndjson, its compressed form, and retention fragments <tid>.<n>.ndjson(.gz). */
+function nativeLogFiles(nativeDir: string, threadId: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(nativeDir);
+  } catch {
+    return [];
+  }
+  const pattern = new RegExp(`^${threadId}(?:\\.\\d+)?\\.ndjson(?:\\.gz)?$`);
+  return names.filter((name) => pattern.test(name)).sort().map((name) => join(nativeDir, name));
+}
+
+interface GzPage {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  total: number;
+  lines: unknown[];
+}
+
+const gzPages = new Map<string, GzPage>();
+const GZ_CACHE_MAX = 64;
+
+/** A compressed log is never appended to, so a stat-identical cache entry stays valid. */
+function readGzLines<T>(file: string, limit: number, valid: RecordGuard<T>): { lines: T[]; total: number } {
+  let stat: FileStat;
+  try {
+    stat = statSync(file);
+  } catch {
+    return { lines: [], total: 0 };
+  }
+  const cached = gzPages.get(file);
+  if (cached && cached.dev === stat.dev && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return { lines: cached.lines.slice(-limit) as T[], total: cached.total };
+  }
+  let text: string;
+  try {
+    text = gunzipSync(readFileSync(file)).toString("utf8");
+  } catch {
+    return { lines: [], total: 0 };
+  }
+  let total = 0;
+  const lines: T[] = [];
+  for (const raw of text.split("\n")) {
+    if (!raw) continue;
+    total++;
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (valid(value)) lines.push(value);
+    } catch {
+    }
+  }
+  const entry: GzPage = { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, total, lines: lines.slice(-MAX_LIMIT) };
+  gzPages.delete(file);
+  gzPages.set(file, entry);
+  while (gzPages.size > GZ_CACHE_MAX) gzPages.delete(gzPages.keys().next().value!);
+  return { lines: lines.slice(-limit), total };
+}
+
+/** Every fragment holds at most `limit` tail lines; the merged tail is the newest `limit` records by timestamp. */
+function readNativeLines(nativeDir: string, threadId: string, limit: number): { lines: NativeRecord[]; total: number } {
+  const lines: NativeRecord[] = [];
+  let total = 0;
+  for (const file of nativeLogFiles(nativeDir, threadId)) {
+    const part = file.endsWith(".gz") ? readGzLines(file, limit, isNativeRecord) : readRecentLines(file, limit, isNativeRecord);
+    lines.push(...part.lines);
+    total += part.total;
+  }
+  lines.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return { lines: lines.slice(-limit), total };
+}
+
 export function readThreadEvents(input: {
   eventsDir: string;
   nativeDir: string;
@@ -255,7 +329,7 @@ export function readThreadEvents(input: {
   const limit = Number.isFinite(requested) ? Math.max(1, Math.min(Math.trunc(requested), MAX_LIMIT)) : DEFAULT_LIMIT;
 
   const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent);
-  const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord);
+  const native = readNativeLines(nativeDir, threadId, limit);
 
   const merged: InspectorEntry[] = [
     ...runtime.lines.map((data): InspectorEntry => ({
